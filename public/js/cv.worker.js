@@ -12,6 +12,125 @@ function imageProcessing({ msg, payload }) {
   postMessage({ msg, payload: imageDataFromMat(result) })
 }
 
+function placeMaskImage(origImg, maskImg, cvReqId) {
+
+  origImg = cv.matFromImageData(origImg);
+  maskImg = cv.matFromImageData(maskImg);
+
+  let grayMask = new cv.Mat();
+  cv.cvtColor(maskImg, grayMask, cv.COLOR_RGB2GRAY);
+
+  let thresImg = new cv.Mat();
+  cv.threshold(grayMask, thresImg, 120, 255, cv.THRESH_BINARY);
+
+  let bitNTImg = new cv.Mat();
+  cv.bitwise_not(thresImg, bitNTImg);
+
+  let bg = new cv.Mat();
+  cv.bitwise_or(origImg, origImg, bg, bitNTImg);
+
+  let fg = new cv.Mat();
+  cv.bitwise_and(maskImg, maskImg, fg, grayMask);
+
+  let res = new cv.Mat();
+  cv.add(bg, fg, res);
+
+  postMessage({ msg: 'placeMaskImage', payload: imageDataFromMat(res), cvReqId });
+}
+
+function placeNumPlateLogo(origImg, maskImg, logo) {
+  origImg = cv.matFromImageData(origImg);
+  maskImg = cv.matFromImageData(maskImg);
+  logo = cv.matFromImageData(logo);
+
+  let grayMask = new cv.Mat();
+  cv.cvtColor(maskImg, grayMask, cv.COLOR_RGB2GRAY);
+
+  let thresImg = new cv.Mat();
+  cv.threshold(grayMask, thresImg, 120, 255, cv.THRESH_BINARY);
+
+  let bitNTImg = new cv.Mat();
+  cv.bitwise_not(thresImg, bitNTImg);
+
+  let bg = new cv.Mat();
+  cv.bitwise_or(origImg, origImg, bg, bitNTImg);
+
+  // //////////////// for mask + logo /////////////////////// //
+
+  let grayMaskResize = new cv.Mat();
+  cv.resize(grayMask, grayMaskResize, new cv.Size(0, 0), fx = 2, fy = 2);
+
+  let grayMaskThres = new cv.Mat();
+  let tempVect = new cv.MatVector();
+  cv.threshold(grayMaskResize, grayMaskThres, 40, 255, 0);
+  // cv.split(grayMaskThres, tempVect);
+  // grayMaskThres = tempVect.get(1);
+
+  let contours = new cv.MatVector();
+  let hiearchy = new cv.Mat();
+  cv.findContours(grayMaskThres, contours, hiearchy, 1, 2);
+  contours = contours.get(0);
+
+  let rect = cv.minAreaRect(contours);
+  let angle = rect.angle;
+
+  // let box = new cv.Mat();
+  // cv.boxPoints(rect, box);
+
+  let box = cv.RotatedRect.boundingRect({
+    center: rect.center,
+    size: rect.size,
+    angle: rect.angle
+  })
+
+  let box2 = cv.RotatedRect.points({
+    center: rect.center,
+    size: rect.size,
+    angle: rect.angle
+  })
+
+
+  let area = rect.size.height * rect.size.width;
+
+  if (area) {
+
+    let w = logo.cols, h = logo.rows;
+
+    if (angle > 45) {
+      var pts1 = [0, 0];
+      var pts2 = [w, 0];
+      var pts3 = [w, h];
+      var pts4 = [0, h];
+    } else {
+      var pts1 = [0, h];
+      var pts2 = [0, 0];
+      var pts3 = [w, 0];
+      var pts4 = [w, h];
+    }
+
+    let ptSrc = [pts1, pts2, pts3, pts4];
+
+    ptSrc = cv.matFromArray(ptSrc[0].length,ptSrc.length, cv.CV_32F, ptSrc);
+    console.log(Object.values(ptSrc));
+    let tranformMat = cv.findHomography(ptSrc, box).homography;
+    let result = new cv.Mat();
+    cv.warpPerspective(logo, result, tranformMat, grayMaskResize.size(), borderMode = cv.BORDER_CONSTANT, new cv.Scalar());
+
+    let grayMaskResize1 = new cv.Mat();
+    cv.resize(result, grayMaskResize1, new cv.Size(0, 0), fx = 0.5, fy = 0.5, interpolation = cv.INTER_LANCZOS4);
+
+    ////////////////////////////////////////////////////////////
+    let fg = new cv.Mat();
+    cv.bitwise_and(maskImg, grayMaskResize1, fg, grayMask);
+
+    let res = new cv.Mat();
+    cv.add(bg, fg, res);
+
+    postMessage({ msg: 'placeMaskImage', payload: imageDataFromMat(res), cvReqId });
+  }
+}
+
+
 /**
  * This function is to convert again from cv.Mat to ImageData
  */
@@ -68,25 +187,36 @@ function waitForOpencv(callbackFn, waitTimeMs = 30000, stepTimeMs = 100) {
   }, stepTimeMs)
 }
 
+
+
 /**
  * This exists to capture all the events that are thrown out of the worker
  * into the worker. Without this, there would be no communication possible
  * with our project.
  */
 onmessage = function (e) {
-  switch (e.data.msg) {
-    case 'load': {
-      // Import Webassembly script
-      self.importScripts('./opencv_3_4_custom_O3.js')
-      waitForOpencv(function (success) {
-        if (success) postMessage({ msg: e.data.msg })
-        else throw new Error('Error on loading OpenCV')
-      })
-      break
+  try {
+    switch (e.data.msg) {
+      case 'load': {
+        // Import Webassembly script
+        self.importScripts('https://docs.opencv.org/master/opencv.js');
+        waitForOpencv(function (success) {
+          if (success) postMessage({ msg: e.data.msg, cvReqId: e.data.cvReqId });
+          else throw new Error('Error on loading OpenCV');
+        })
+        break
+      }
+      case 'imageProcessing':
+        return imageProcessing(e.data)
+      case 'placeMaskImage':
+        return placeMaskImage(e.data.payload.carImg, e.data.payload.maskImg, e.data.cvReqId);
+      case 'placeLogoMaskImg':
+        return placeNumPlateLogo(e.data.payload.carImg, e.data.payload.maskImg, e.data.payload.logoImg, e.data.cvReqId);
+      default:
+        break
     }
-    case 'imageProcessing':
-      return imageProcessing(e.data)
-    default:
-      break
+  }
+  catch (error) {
+    postMessage({ cvReqId: e.data.cvReqId, error });
   }
 }
